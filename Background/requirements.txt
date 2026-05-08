@@ -5,11 +5,10 @@ certifi>=2026.4.22
 charset-normalizer>=3.4.7
 click>=8.3.3
 colorama>=0.4.6
-dotenv>=0.9.9
 fastapi>=0.136.1
 greenlet>=3.5.0
 h11>=0.16.0
-httptoo>=ls>=0.7.1
+httptools>=0.7.1
 idna>=3.13
 pip>=25.3
 psycopg2>=2.9.12
