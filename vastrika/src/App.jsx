@@ -2,13 +2,14 @@ import React, { useState, useEffect, Fragment } from "react";
 import { productsAPI, ordersAPI, usersAPI, adminAPI } from "./services/api";
 import Logo from './assets/logo.png';
 import Hero1 from './assets/Hero1.jpg';
+import Discount from './assets/Sales.png';
 import "./App.css";
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
 const ADMIN_INFO = {
-  name: "Priya Sharma",
-  phone: "+91 98765 43210",
+  name: "VIKAS",
+  phone: "+91 97008 12818",
   upiId: "priya.luxe@upi",
 };
 
@@ -349,33 +350,100 @@ function ProductDetailFull({ product, qty, setQty, user, onAddToCart, onLoadSimi
 // ─── CART MODAL ───────────────────────────────────────────────────────────────
 
 function CartModal({ cart, setCart, cartTotal, checkoutType, setCheckoutType, adminInfo, user, onPlaceOrder, onLogin }) {
+  // Calculate the actual price for an item (with discount)
+  const getItemPrice = (item) => {
+    // If item has discount info stored
+    if (item.discount && item.discount > 0) {
+      return item.discounted_price || (item.cost * (1 - item.discount / 100));
+    }
+    // If product has discount from API
+    if (item.discount_percent) {
+      return item.cost * (1 - item.discount_percent / 100);
+    }
+    return item.cost;
+  };
+  
+  // Calculate total with discounts
+  const calculateTotal = () => {
+    return cart.reduce((sum, item) => {
+      const price = getItemPrice(item);
+      return sum + (price * item.qty);
+    }, 0);
+  };
+  
+  const finalCartTotal = calculateTotal();
+
   return (
     <>
-      <div className="modal-title">Your Cart</div>
+      <div className="modal-title">🛍 Your Cart</div>
       {cart.length === 0 && <div className="no-data">Your cart is empty.</div>}
-      {cart.map(item => (
-        <div key={item.id} className="cart-item">
-          <ProductImage 
-            imageId={item.images?.[0]?.id} 
-            alt={item.name}
-            fit="contain"
-            style={{ width: '64px', height: '64px', borderRadius: '4px' }}
-          />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 500 }}>{item.name}</div>
-            <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Qty: {item.qty}</div>
+      {cart.map(item => {
+        const itemPrice = getItemPrice(item);
+        const itemTotal = itemPrice * item.qty;
+        const hasDiscount = (item.discount && item.discount > 0) || item.discount_percent;
+        const discountPercent = item.discount || item.discount_percent;
+        
+        return (
+          <div key={item.id} className="cart-item">
+            <ProductImage 
+              imageId={item.images?.[0]?.id} 
+              alt={item.name}
+              fit="contain"
+              style={{ width: '64px', height: '64px', borderRadius: '4px' }}
+            />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 500 }}>{item.name}</div>
+              <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Qty: {item.qty}</div>
+              {hasDiscount && (
+                <div style={{ fontSize: 11, color: "#4caf50", marginTop: 4 }}>
+                  🔥 {discountPercent}% OFF applied
+                </div>
+              )}
+            </div>
+            <div style={{ textAlign: "right" }}>
+              {hasDiscount ? (
+                <>
+                  <div className="text-muted" style={{ fontSize: 12, textDecoration: "line-through" }}>
+                    ₹{(item.cost * item.qty).toLocaleString("en-IN")}
+                  </div>
+                  <div className="text-gold" style={{ fontWeight: 600, fontSize: 16 }}>
+                    ₹{itemTotal.toLocaleString("en-IN")}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#4caf50" }}>
+                    Saved: ₹{((item.cost - itemPrice) * item.qty).toLocaleString("en-IN")}
+                  </div>
+                </>
+              ) : (
+                <div className="text-gold" style={{ fontWeight: 600, fontSize: 16 }}>
+                  ₹{itemTotal.toLocaleString("en-IN")}
+                </div>
+              )}
+            </div>
+            <button className="btn btn-danger btn-sm" onClick={() => setCart(c => c.filter(i => i.id !== item.id))}>✕</button>
           </div>
-          <div className="text-gold">₹{(item.cost * item.qty).toLocaleString("en-IN")}</div>
-          <button className="btn btn-danger btn-sm" onClick={() => setCart(c => c.filter(i => i.id !== item.id))}>✕</button>
-        </div>
-      ))}
+        );
+      })}
 
       {cart.length > 0 && (
         <>
           <div className="flex justify-between" style={{ marginTop: 16, fontSize: 18, fontWeight: 600, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
             <span>Total</span>
-            <span className="text-gold">₹{cartTotal.toLocaleString("en-IN")}</span>
+            <span className="text-gold">₹{finalCartTotal.toLocaleString("en-IN")}</span>
           </div>
+          
+          {/* Show savings if any */}
+          {(() => {
+            const originalTotal = cart.reduce((sum, item) => sum + (item.cost * item.qty), 0);
+            const savings = originalTotal - finalCartTotal;
+            if (savings > 0) {
+              return (
+                <div style={{ textAlign: "right", fontSize: 12, color: "#4caf50", marginTop: 8 }}>
+                  You saved: ₹{savings.toLocaleString("en-IN")}
+                </div>
+              );
+            }
+            return null;
+          })()}
 
           {!checkoutType && (
             <div className="checkout-type-selector">
@@ -402,7 +470,7 @@ function CartModal({ cart, setCart, cartTotal, checkoutType, setCheckoutType, ad
               </button>
               <CheckoutForm
                 type={checkoutType}
-                total={cartTotal}
+                total={finalCartTotal}
                 adminInfo={adminInfo}
                 onConfirm={(data) => onPlaceOrder(data, checkoutType)}
               />
@@ -413,7 +481,6 @@ function CartModal({ cart, setCart, cartTotal, checkoutType, setCheckoutType, ad
     </>
   );
 }
-
 // ─── CHECKOUT FORM ────────────────────────────────────────────────────────────
 
 function CheckoutForm({ type, total, adminInfo, onConfirm, onClose }) {
@@ -657,7 +724,7 @@ function CheckoutForm({ type, total, adminInfo, onConfirm, onClose }) {
         </label>
         <input 
           className="form-input" 
-          placeholder="98765 43210" 
+          placeholder="e.g: XXXXX XXX98" 
           value={form.phone} 
           onChange={handlePhoneChange}
           type="tel"
@@ -1062,7 +1129,7 @@ function Footer() {
     <footer className="footer">
       <div className="footer-inner">
         <div className="footer-brand">
-          <div className="footer-logo">LUXE</div>
+          <div className="footer-logo"><img src={Logo} className="nav-logo-img"/></div>
           <div className="footer-tagline">Curated Excellence, Delivered.</div>
           <div className="footer-desc">Handpicked luxury goods for those who appreciate the finest in craftsmanship and design.</div>
         </div>
@@ -1092,7 +1159,7 @@ function Footer() {
         </div>
       </div>
       <div className="footer-bottom">
-        <div>© 2024 LUXE. All rights reserved.</div>
+        <div>© 2026 Nari Vastrika. All rights reserved.</div>
         <div className="footer-bottom-links">
           <span>Privacy Policy</span><span>Terms of Service</span><span>Shipping Policy</span>
         </div>
@@ -1131,6 +1198,43 @@ const [expandedOrder, setExpandedOrder] = useState(null);
 const [expandedItems, setExpandedItems] = useState(null);
 const [showAddressFor, setShowAddressFor] = useState(null);
 const [verifyingPayment, setVerifyingPayment] = useState(false);
+
+// Add these state variables with your other state declarations (around line 600-650)
+const [allUsers, setAllUsers] = useState([]);
+
+
+const updateUser = async (userId, userData) => {
+  try {
+    await adminAPI.updateUser(userId, userData);
+    await loadAllUsers();
+    showToast("User updated successfully");
+  } catch (err) {
+    console.error("Failed to update user:", err);
+    showToast("Failed to update user");
+  }
+};
+
+const deleteUser = async (userId) => {
+  if (!window.confirm("Are you sure you want to delete this user?")) return;
+  try {
+    await adminAPI.deleteUser(userId);
+    await loadAllUsers();
+    showToast("User deleted successfully");
+  } catch (err) {
+    console.error("Failed to delete user:", err);
+    showToast("Failed to delete user");
+  }
+};
+
+const resetUserPassword = async (userId, newPassword) => {
+  try {
+    await adminAPI.resetPassword(userId, newPassword);
+    showToast("Password reset successfully");
+  } catch (err) {
+    console.error("Failed to reset password:", err);
+    showToast("Failed to reset password");
+  }
+};
 
 // Add these functions
 const toggleOrderDetails = (orderId) => {
@@ -1234,13 +1338,26 @@ const cancelOrder = async (orderId) => {
   };
 
   const loadLatestProducts = async () => {
-    try {
-      const data = await productsAPI.getLatest(8);
-      setLatestProducts(data);
-    } catch (err) {
-      console.error("Failed to load latest products:", err);
+  try {
+    const data = await productsAPI.getWeeklyDeals(10);
+    // Handle both response formats (array or object with products property)
+    const products = Array.isArray(data) ? data : (data.products || []);
+    setLatestProducts(products);
+    
+    // Debug: log to check if discounts are coming through
+    if (products.length > 0) {
+      console.log("Latest products with discounts:", products.map(p => ({
+        name: p.name,
+        discount: p.discount,
+        original_price: p.original_price,
+        discounted_price: p.discounted_price
+      })));
     }
-  };
+  } catch (err) {
+    console.error("Failed to load latest products:", err);
+    setLatestProducts([]);
+  }
+};
 
   const loadAdminStats = async () => {
     try {
@@ -1309,7 +1426,7 @@ const cancelOrder = async (orderId) => {
       setUser(userData);
       localStorage.setItem("user", JSON.stringify(userData));
       setModal(null);
-      showToast(`Welcome to LUXE, ${data.name.split(" ")[0]}!`);
+      showToast(`Welcome to Nari Vastrika, ${data.name.split(" ")[0]}!`);
       return null;
     } catch (err) {
       return err.message;
@@ -1324,28 +1441,62 @@ const cancelOrder = async (orderId) => {
     showToast("Logged out.");
   };
 
-  const addToCart = (product) => {
-    setCart(prev => {
-      const exists = prev.find(i => i.id === product.id);
-      if (exists) {
-        return prev.map(i => i.id === product.id ? { ...i, qty: i.qty + qty } : i);
-      }
-      return [...prev, { ...product, qty }];
-    });
-    showToast(`${product.name} added to cart!`);
-    setModal(null);
-    setQty(1);
-  };
-
-  const deleteProduct = async (id) => {
-    try {
-      await productsAPI.delete(id);
-      await loadProducts();
-      showToast("Product deleted.");
-    } catch (err) {
-      showToast("Failed to delete product");
+ const addToCart = (product) => {
+  const existingItem = cart.find(i => i.id === product.id);
+  const currentQtyInCart = existingItem ? existingItem.qty : 0;
+  const newTotalQty = currentQtyInCart + qty;
+  
+  // Stock validation
+  if (newTotalQty > product.stock) {
+    showToast(`❌ Only ${product.stock} items available in stock!`);
+    return;
+  }
+  
+  // Calculate the actual price with discount
+  let finalPrice = product.cost;
+  let discountPercent = product.discount || 0;
+  let discountedPrice = product.discounted_price || null;
+  
+  if (discountPercent > 0) {
+    finalPrice = discountedPrice || (product.cost * (1 - discountPercent / 100));
+  }
+  
+  setCart(prev => {
+    const exists = prev.find(i => i.id === product.id);
+    if (exists) {
+      return prev.map(i => i.id === product.id ? { 
+        ...i, 
+        qty: i.qty + qty 
+      } : i);
     }
-  };
+    return [...prev, { 
+      ...product, 
+      qty,
+      // Store discount information
+      discount: discountPercent,
+      discounted_price: discountedPrice,
+      final_price: finalPrice,
+      original_cost: product.cost
+    }];
+  });
+  
+  showToast(`✓ ${product.name} added to cart!`);
+  setModal(null);
+  setQty(1);
+};
+
+ const deleteProduct = async (id) => {
+  if (!window.confirm("Are you sure you want to delete this product?")) return;
+  try {
+    await productsAPI.delete(id);
+    await loadProducts();
+    await loadLatestProducts();
+    showToast("Product deleted.");
+  } catch (err) {
+    console.error("Failed to delete product:", err);
+    showToast("Failed to delete product");
+  }
+};
 
   const saveProduct = async (data) => {
     const formData = new FormData();
@@ -1415,6 +1566,36 @@ const loadAdminProfile = async () => {
   }
 };
 
+// Add this function in your App component, before placeOrder
+const updateStockAfterOrder = async (cartItems) => {
+  console.log("🔄 Updating stock for", cartItems.length, "items...");
+  
+  for (const item of cartItems) {
+    // Find the current product from the products state
+    const product = products.find(p => p.id === item.id);
+    
+    if (!product) {
+      console.error(`❌ Product not found:`, item.id);
+      continue;
+    }
+    
+    // Calculate the quantity to deduct
+    const qtyToDeduct = item.qty;
+    const newStock = Math.max(0, product.stock - qtyToDeduct);
+    
+    console.log(`📦 Updating ${item.name} (ID: ${product.id}): ${product.stock} → ${newStock}`);
+    
+    try {
+      // Call the API to update stock
+      await productsAPI.updateStock(product.id, newStock);
+      console.log(`✅ Stock updated successfully for ${item.name}`);
+    } catch (err) {
+      console.error(`❌ Failed to update stock for ${item.id}:`, err);
+      // Don't throw the error - we still want to complete the order
+      // But log it for debugging
+    }
+  }
+};
 const updateAdminProfile = async (profileData) => {
   const result = await adminAPI.updateAdminProfile(user.id, profileData);
   // Update the user state with new info
@@ -1441,29 +1622,65 @@ useEffect(() => {
   }
 }, [user]);
 
-  const placeOrder = async (formData, type) => {
+const placeOrder = async (formData, type) => {
+  // Calculate final prices with discount for each item
+  const getItemFinalPrice = (item) => {
+    if (item.discount && item.discount > 0) {
+      return item.discounted_price || (item.cost * (1 - item.discount / 100));
+    }
+    return item.cost;
+  };
+
+  // Calculate order total with discounts
+  const orderTotal = cart.reduce((sum, item) => {
+    const price = getItemFinalPrice(item);
+    return sum + (price * item.qty);
+  }, 0);
+
   const orderData = {
     customer_name: formData.name,
-    customer_email: formData.email,  // ADD THIS LINE
+    customer_email: formData.email,
     customer_phone: formData.phone,
     address: formData.address,
     pincode: formData.pincode,
     order_type: type,
     upi_transaction_id: formData.upiTransactionId,
-    items: cart.map(i => ({ productId: i.id, name: i.name, qty: i.qty, price: i.cost })),
-    total: cartTotal,
+    items: cart.map(i => ({ 
+      productId: i.id, 
+      name: i.name, 
+      qty: i.qty, 
+      price: getItemFinalPrice(i),
+      original_price: i.cost,
+      discount_percent: i.discount || 0,
+    })),
+    total: orderTotal,
     user_id: user?.id || null,
   };
 
   try {
-    await ordersAPI.create(orderData);
+    // 1. Create the order (this triggers email on backend)
+    const orderResponse = await ordersAPI.create(orderData);
+    console.log("✅ Order created, email sent:", orderResponse);
+    
+    // 2. Update stock after order is created
+    await updateStockAfterOrder(cart);
+    console.log("✅ Stock updated");
+    
+    // 3. Refresh all data
+    await loadProducts();
+    await loadLatestProducts();
+    await loadOrders();
+    
+    // 4. Clear cart and close modal
     setCart([]);
     setModal(null);
     setCheckoutType(null);
-    await loadOrders();
-    showToast(type === "purchase" ? "Order placed! 🎉" : "Booking confirmed! 📅");
+    
+    showToast(type === "purchase" ? "✅ Order placed! Check your email for confirmation. Stock updated." : "📅 Booking confirmed! Email sent. Stock reserved.");
   } catch (err) {
-    showToast("Failed to place order");
+    console.error("Failed to place order:", err);
+    showToast("Failed to place order: " + (err.message || "Please try again"));
+    throw err;
   }
 };
 
@@ -1529,71 +1746,147 @@ useEffect(() => {
     </button>
   </div>
 </div>
+<div className ="Dis">
+  <img src={Discount} alt="Discount" width={200}  height={150}/>
+</div>
           {/* LATEST COLLECTIONS SLIDER */}
-          {latestProducts.length > 0 && (
-            <div className="section latest-collections">
-              <div className="section-header">
-                <div>
-                  <div className="section-title">✨ Latest Collections</div>
-                  <div className="section-sub">Fresh arrivals just for you</div>
-                </div>
-              </div>
-              
-              <div className="hero-slider">
-                <div className="slider-main">
-                  <div className="slider-image-container">
-                    <ImageSlider 
-                      images={latestProducts[currentSlideIndex]?.images || []} 
-                      productName={latestProducts[currentSlideIndex]?.name}
-                      fit="contain"
-                      height="400px"
-                    />
-                  </div>
-                  <div className="slider-info">
-                    <h3>{latestProducts[currentSlideIndex]?.name}</h3>
-                    <p>{latestProducts[currentSlideIndex]?.description?.substring(0, 100)}...</p>
-                    <div className="price-section">
-                      {latestProducts[currentSlideIndex]?.discount ? (
-                        <>
-                          <span className="original-price">₹{latestProducts[currentSlideIndex]?.original_price?.toLocaleString("en-IN")}</span>
-                          <span className="discounted-price">₹{latestProducts[currentSlideIndex]?.discounted_price?.toLocaleString("en-IN")}</span>
-                          <span className="discount-badge">{latestProducts[currentSlideIndex]?.discount}% OFF</span>
-                        </>
-                      ) : (
-                        <span className="price">₹{latestProducts[currentSlideIndex]?.price_inr?.toLocaleString("en-IN")}</span>
-                      )}
-                    </div>
-                    <button 
-                      className="btn btn-gold"
-                      onClick={() => {
-                        setSelectedProduct(latestProducts[currentSlideIndex]);
-                        setModal("productDetail");
-                      }}
-                    >
-                      Shop Now
-                    </button>
-                  </div>
-                </div>
-                <div className="slider-thumbnails">
-                  {latestProducts.map((product, idx) => (
-                    <div
-                      key={product.id}
-                      className={`thumbnail ${idx === currentSlideIndex ? 'active' : ''}`}
-                      onClick={() => setCurrentSlideIndex(idx)}
-                    >
-                      <ProductImage 
-                        imageId={product.images?.[0]?.id}
-                        alt={product.name}
-                        fit="cover"
-                        style={{ width: '80px', height: '80px' }}
-                      />
-                      {product.discount && <span className="thumb-discount">{product.discount}%</span>}
-                    </div>
-                  ))}
-                </div>
-              </div>
+        {latestProducts.length > 0 && (
+  <div className="sectionlatest-collections">
+    <div className="section-header">
+      <div>
+        <div className="section-title">✨ Latest Collections</div>
+        <div className="section-sub">
+          Fresh arrivals just for you • Last 7 days
+        </div>
+      </div>
+      <div className="header-stats">
+        <span className="product-count">{latestProducts.length} new items</span>
+      </div>
+    </div>
+    
+    <div className="hero-slider">
+      <div className="slider-main">
+        <div className="slider-image-container">
+          <ImageSlider 
+            images={latestProducts[currentSlideIndex]?.images || []} 
+            productName={latestProducts[currentSlideIndex]?.name}
+            fit="contain"
+            height="400px"
+          />
+          {/* Show "NEW" badge on slider */}
+          {latestProducts[currentSlideIndex]?.created_at && 
+           (new Date() - new Date(latestProducts[currentSlideIndex].created_at)) < (7 * 24 * 60 * 60 * 1000) && (
+            <div className="slider-new-badge">
+              <span className="new-text">🔥 NEW ARRIVAL</span>
+              <span className="new-date">
+                Added {Math.floor((new Date() - new Date(latestProducts[currentSlideIndex].created_at)) / (24 * 60 * 60 * 1000))} days ago
+              </span>
             </div>
           )}
+        </div>
+        <div className="slider-info">
+          <h3>{latestProducts[currentSlideIndex]?.name}</h3>
+          
+          {/* Show category and subcategory */}
+          <div className="product-meta">
+            <span className="category">{latestProducts[currentSlideIndex]?.category}</span>
+            {latestProducts[currentSlideIndex]?.subcategory && (
+              <span className="subcategory"> / {latestProducts[currentSlideIndex]?.subcategory}</span>
+            )}
+          </div>
+          
+          {/* Show when added */}
+          {latestProducts[currentSlideIndex]?.created_at && (
+            <div className="added-date">
+              📅 Added: {new Date(latestProducts[currentSlideIndex].created_at).toLocaleDateString('en-IN', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+              })}
+            </div>
+          )}
+          
+          <p>{latestProducts[currentSlideIndex]?.description?.substring(0, 100)}...</p>
+          
+          <div className="price-section">
+            {latestProducts[currentSlideIndex]?.discount ? (
+              <>
+                <span className="original-price">
+                  ₹{latestProducts[currentSlideIndex]?.original_price?.toLocaleString("en-IN")}
+                </span>
+                <span className="discounted-price">
+                  ₹{latestProducts[currentSlideIndex]?.discounted_price?.toLocaleString("en-IN")}
+                </span>
+                <span className="discount-badge">
+                  {latestProducts[currentSlideIndex]?.discount}% OFF
+                </span>
+              </>
+            ) : (
+              <span className="price">
+                ₹{latestProducts[currentSlideIndex]?.price_inr?.toLocaleString("en-IN")}
+              </span>
+            )}
+          </div>
+          
+          {/* Stock status */}
+          {latestProducts[currentSlideIndex]?.stock > 0 && latestProducts[currentSlideIndex]?.stock <= 5 && (
+            <div className="stock-warning">⚠️ Only {latestProducts[currentSlideIndex]?.stock} left in stock!</div>
+          )}
+          
+          <button 
+            className="btn btn-gold"
+            onClick={() => {
+              setSelectedProduct(latestProducts[currentSlideIndex]);
+              setModal("productDetail");
+            }}
+          >
+            🛒 Shop Now
+          </button>
+        </div>
+      </div>
+      
+      {/* Thumbnails with better info */}
+      <div className="slider-thumbnails">
+        {latestProducts.map((product, idx) => (
+          <div
+            key={product.id}
+            className={`thumbnail ${idx === currentSlideIndex ? 'active' : ''}`}
+            onClick={() => setCurrentSlideIndex(idx)}
+          >
+            <div className="thumbnail-image">
+              <ProductImage 
+                imageId={product.images?.[0]?.id}
+                alt={product.name}
+                fit="cover"
+                style={{ width: '100%', height: '100%' }}
+              />
+            </div>
+            <div className="thumbnail-info">
+              <div className="thumbnail-name">{product.name}</div>
+              <div className="thumbnail-price">
+                {product.discount ? (
+                  <>
+                    <span className="original-small">₹{product.original_price?.toLocaleString("en-IN")}</span>
+                    <span className="discount-small">₹{product.discounted_price?.toLocaleString("en-IN")}</span>
+                  </>
+                ) : (
+                  <span>₹{product.price_inr?.toLocaleString("en-IN")}</span>
+                )}
+              </div>
+            </div>
+            {product.discount && (
+              <span className="thumb-discount">{product.discount}% OFF</span>
+            )}
+            {product.created_at && 
+             (new Date() - new Date(product.created_at)) < (7 * 24 * 60 * 60 * 1000) && (
+              <span className="thumb-new-badge">NEW</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>
+)}
 
           <div className="section" id="products-section">
             <div className="section-header">
@@ -1653,29 +1946,34 @@ useEffect(() => {
                           style={{ width: '100%', height: '100%' }}
                         />
                       )}
+                      {p.stock === 0 && <div className="low-stock-badge">Out of stock</div>}
                       {p.stock <= 5 && <div className="low-stock-badge">Only {p.stock} left!</div>}
                       {p.discount && <div className="discount-badge-corner">{p.discount}% OFF</div>}
                     </div>
-                    <div className="product-card-body">
-                      <div className="product-category">{p.category}{p.subcategory ? ` · ${p.subcategory}` : ""}</div>
-                      <div className="product-name">{p.name}</div>
-                      <div className="product-desc">{p.description?.substring(0, 80)}...</div>
-                      {p.colors?.length > 0 && (
-                        <div className="color-dots">
-                          {p.colors.slice(0, 5).map(c => <span key={c} className="color-dot" title={c} style={{ background: COLOR_HEX[c] || "#888" }} />)}
-                        </div>
-                      )}
-                      <div className="product-price-section">
-                        {p.discount ? (
-                          <>
-                            <span className="original-price">₹{p.original_price?.toLocaleString("en-IN")}</span>
-                            <span className="discounted-price">₹{p.discounted_price?.toLocaleString("en-IN")}</span>
-                          </>
-                        ) : (
-                          <span className="product-price">₹{p.price_inr?.toLocaleString("en-IN")}</span>
-                        )}
-                      </div>
-                    </div>
+<div className="product-card-body">
+  <div className="product-category">{p.category}{p.subcategory ? ` · ${p.subcategory}` : ""}</div>
+  <div className="product-name">{p.name}</div>
+  <div className="product-desc">{p.description?.substring(0, 80)}...</div>
+  {p.colors?.length > 0 && (
+    <div className="color-dots">
+      {p.colors.slice(0, 5).map(c => <span key={c} className="color-dot" title={c} style={{ background: COLOR_HEX[c] || "#888" }} />)}
+    </div>
+  )}
+<div className="product-price-section">
+  {p.discount ? (
+    <>
+      <span className="original-price">₹{p.original_price?.toLocaleString("en-IN")}</span>
+      <span className="discounted-price">₹{p.discounted_price?.toLocaleString("en-IN")}</span>
+      <span className="discount-badge">{p.discount}% OFF</span>
+    </>
+  ) : (
+    <span className="product-price">₹{p.price_inr?.toLocaleString("en-IN")}</span>
+  )}
+</div>
+  {p.stock === 0 && <div className="stock-status out-of-stock">Out of Stock</div>}
+  {p.stock > 0 && p.stock <= 5 && <div className="stock-status low-stock">Only {p.stock} left!</div>}
+  {p.stock > 5 && <div className="stock-status in-stock">In Stock</div>}
+</div>
                   </div>
                 ))}
                 {filteredProducts.length === 0 && <div className="no-data" style={{ gridColumn: "1/-1" }}>No products found.</div>}
@@ -1770,22 +2068,6 @@ useEffect(() => {
                     </div>
                   ))}
                 </div>
-                <div className="admin-section-title">Recent Orders</div>
-                <table>
-                  <thead><tr><th>Order ID</th><th>Type</th><th>Items</th><th>Total</th><th>Status</th><th>Date</th></tr></thead>
-                  <tbody>
-                    {orders.slice(-5).reverse().map(o => (
-                      <tr key={o.id}>
-                        <td data-label="ID">{o.id}</td>
-                        <td data-label="Type"><span className={`badge ${o.order_type === "booking" ? "badge-blue" : "badge-purple"}`}>{o.order_type || "purchase"}</span></td>
-                        <td data-label="Items">{o.items?.map(i => i.name).join(", ")}</td>
-                        <td data-label="Total" className="text-gold">₹{o.total_inr?.toLocaleString("en-IN")}</td>
-                        <td data-label="Status"><span className={`badge ${o.status === "Delivered" ? "badge-green" : "badge-amber"}`}>{o.status}</span></td>
-                        <td data-label="Date" className="text-muted">{new Date(o.date).toLocaleDateString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               </>
             )}
 
@@ -2468,7 +2750,7 @@ function AdminProfileEdit({ admin, onUpdate, onClose }) {
           className="form-input"
           value={form.phone}
           onChange={(e) => setForm({ ...form, phone: e.target.value })}
-          placeholder="+91 98765 43210"
+          placeholder="eg:+91 XXXXX XXX10"
         />
       </div>
       
