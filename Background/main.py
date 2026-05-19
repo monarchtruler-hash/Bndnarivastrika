@@ -11,8 +11,13 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from io import BytesIO
 from datetime import datetime, timedelta
+from pytz import UTC  # Add this import at the top
+
+# Or use this approach without pytz
+from datetime import datetime, timezone
 import os
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
 import Model as Db_Model
 from backend.db import get_db
@@ -20,6 +25,13 @@ from backend.db import get_db
 load_dotenv()
 
 app = FastAPI(title="Nari-Vastrika API", version="1.0.0")
+
+# Pydantic models for request validation
+class StockUpdate(BaseModel):
+    stock: int
+
+class StockDecrease(BaseModel):
+    quantity: int
 
 # CORS Middleware
 app.add_middleware(
@@ -706,15 +718,40 @@ def get_products_with_discounts(
     
     return result
 
-@app.get("/nari-vastrika/products/latest/")
-def get_latest_products(limit: int = 8, db: Session = Depends(get_db)):
-    products = db.query(Db_Model.Product).order_by(
+
+@app.get("/nari-vastrika/products/weekly-deals/")
+def get_weekly_deals(
+    limit: int = 8,
+    db: Session = Depends(get_db)
+):
+    """
+    Get products for weekly deals (last 7 days)
+    """
+    # Use timezone-aware current time
+    now = datetime.now(timezone.utc)
+    week_ago = now - timedelta(days=7)
+    
+    products = db.query(Db_Model.Product).filter(
+        Db_Model.Product.created_at >= week_ago
+    ).order_by(
         Db_Model.Product.created_at.desc()
     ).limit(limit).all()
     
+    # If not enough products, get the most recent ones
+    if len(products) < limit:
+        additional_products = db.query(Db_Model.Product).order_by(
+            Db_Model.Product.created_at.desc()
+        ).limit(limit - len(products)).all()
+        
+        existing_ids = {p.id for p in products}
+        for p in additional_products:
+            if p.id not in existing_ids:
+                products.append(p)
+    
+    # Get active discounts
     active_discounts = db.query(Db_Model.ProductDiscount).filter(
         Db_Model.ProductDiscount.is_active == True,
-        (Db_Model.ProductDiscount.expires_at > datetime.now()) | (Db_Model.ProductDiscount.expires_at == None)
+        (Db_Model.ProductDiscount.expires_at > now) | (Db_Model.ProductDiscount.expires_at == None)
     ).all()
     
     discount_map = {}
@@ -729,8 +766,24 @@ def get_latest_products(limit: int = 8, db: Session = Depends(get_db)):
     result = []
     for p in products:
         product_data = _serialize_product(p, db)
-        discount = discount_map.get(p.id, global_discount)
         
+        # Add date info - handle timezone comparison safely
+        if p.created_at:
+            # If p.created_at is timezone-aware, make now timezone-aware too
+            if p.created_at.tzinfo is not None:
+                days_ago = (now - p.created_at).days
+            else:
+                # If it's naive, make it aware or convert to naive
+                days_ago = (datetime.now() - p.created_at).days
+        else:
+            days_ago = 0
+        
+        product_data["created_at"] = p.created_at.isoformat() if p.created_at else None
+        product_data["days_ago"] = days_ago
+        product_data["is_new"] = days_ago <= 7
+        
+        # Add discount
+        discount = discount_map.get(p.id, global_discount)
         if discount:
             product_data["discount"] = discount
             product_data["original_price"] = product_data["price_inr"]
@@ -738,7 +791,14 @@ def get_latest_products(limit: int = 8, db: Session = Depends(get_db)):
         
         result.append(product_data)
     
-    return result
+    return {
+        "success": True,
+        "products": result,
+        "total": len(result),
+        "week_start": week_ago.isoformat(),
+        "week_end": now.isoformat()
+    }
+
 
 @app.get("/nari-vastrika/products/similar/{product_id}")
 def get_similar_products(product_id: str, limit: int = 4, db: Session = Depends(get_db)):
@@ -794,6 +854,9 @@ def create_order(
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db)
 ):
+    """
+    Create an order with automatic stock update
+    """
     try:
         items = order.get("items", [])
         if isinstance(items, str):
@@ -804,6 +867,35 @@ def create_order(
         if not isinstance(items, list):
             items = []
 
+        # ========== STOCK VALIDATION ==========
+        stock_errors = []
+        products_to_update = []
+        
+        for item in items:
+            product = db.query(Db_Model.Product).filter(
+                Db_Model.Product.id == item.get("productId")
+            ).first()
+            
+            if not product:
+                stock_errors.append(f"Product '{item.get('name')}' not found")
+            elif product.stock < item.get("qty", 0):
+                stock_errors.append(
+                    f"Insufficient stock for '{product.name}'. "
+                    f"Available: {product.stock}, Requested: {item.get('qty')}"
+                )
+            else:
+                products_to_update.append({
+                    "product": product,
+                    "qty": item.get("qty", 0)
+                })
+        
+        if stock_errors:
+            raise HTTPException(
+                status_code=400, 
+                detail={"message": "Stock validation failed", "errors": stock_errors}
+            )
+        
+        # ========== CREATE ORDER ==========
         order_id = f"ORD-{uuid.uuid4().hex[:8].upper()}"
         
         total = order.get("total", 0)
@@ -828,10 +920,29 @@ def create_order(
         )
 
         db.add(db_order)
+        
+        # ========== UPDATE STOCK ==========
+        stock_updates = []
+        for update_data in products_to_update:
+            product = update_data["product"]
+            qty = update_data["qty"]
+            old_stock = product.stock
+            product.stock -= qty
+            stock_updates.append({
+                "product_id": product.id,
+                "name": product.name,
+                "old_stock": old_stock,
+                "new_stock": product.stock,
+                "reduced_by": qty
+            })
+            print(f"✅ Stock updated: {product.name} - {old_stock} → {product.stock}")
+        
         db.commit()
         db.refresh(db_order)
         
+        # ========== SEND EMAILS ==========
         order_details = _serialize_order(db_order)
+        order_details["stock_updates"] = stock_updates
         
         if order.get("customer_email"):
             background_tasks.add_task(
@@ -848,11 +959,16 @@ def create_order(
             )
 
         return {
-            "message": "Order placed successfully! Check your email for confirmation.", 
-            "order_id": order_id
+            "message": "Order placed successfully! Stock updated automatically.", 
+            "order_id": order_id,
+            "stock_updates": stock_updates
         }
+        
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
+        print(f"❌ Order creation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Order creation failed: {str(e)}")
 
 @app.get("/nari-vastrika/orders/")
@@ -894,6 +1010,53 @@ def update_order_status(
             "email_sent": False
         }
     
+    # Handle stock restoration on cancellation
+    if status == "Cancelled" and old_status not in ["Delivered", "Cancelled"]:
+        items = _safe_json(order.items)
+        restored_stock = []
+        for item in items:
+            product = db.query(Db_Model.Product).filter(
+                Db_Model.Product.id == item.get("productId")
+            ).first()
+            if product:
+                qty = item.get("qty", 0)
+                old_product_stock = product.stock
+                product.stock += qty
+                restored_stock.append({
+                    "product_id": product.id,
+                    "name": product.name,
+                    "old_stock": old_product_stock,
+                    "new_stock": product.stock,
+                    "restored_by": qty
+                })
+                print(f"🔄 Stock restored for cancelled order: {product.name} - {old_product_stock} → {product.stock}")
+        
+        order.status = status
+        db.commit()
+        
+        # Send email about cancellation with stock restoration info
+        order_details = _serialize_order(order)
+        order_details["restored_stock"] = restored_stock
+        
+        if order.customer_email:
+            background_tasks.add_task(
+                send_order_status_update_email,
+                order_details,
+                order.customer_email,
+                order.customer_name,
+                old_status,
+                status
+            )
+        
+        return {
+            "message": f"Order cancelled and stock restored",
+            "order_id": order_id,
+            "old_status": old_status,
+            "new_status": status,
+            "restored_stock": restored_stock
+        }
+    
+    # Normal status update without stock change
     order.status = status
     
     if status == "Confirmed" and order.order_type == "purchase" and not order.is_payment_verified:
@@ -915,7 +1078,6 @@ def update_order_status(
             old_status,
             status
         )
-        
     
     return {
         "message": f"Order status updated from '{old_status}' to '{status}'",
@@ -924,6 +1086,77 @@ def update_order_status(
         "new_status": status,
         "email_sent": bool(order.customer_email),
         "customer_email": order.customer_email
+    }
+
+# ============ PRODUCT STOCK MANAGEMENT ENDPOINTS ============
+
+@app.patch("/nari-vastrika/products/{product_id}/stock")
+def update_product_stock(
+    product_id: str,
+    stock_update: StockUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Update product stock quantity manually
+    """
+    try:
+        product = db.query(Db_Model.Product).filter(Db_Model.Product.id == product_id).first()
+        
+        if not product:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Product with id '{product_id}' not found"
+            )
+        
+        if stock_update.stock < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Stock cannot be negative"
+            )
+        
+        old_stock = product.stock
+        product.stock = stock_update.stock
+        
+        db.commit()
+        db.refresh(product)
+        
+        return {
+            "success": True,
+            "message": "Stock updated successfully",
+            "product_id": product_id,
+            "product_name": product.name,
+            "old_stock": old_stock,
+            "new_stock": product.stock
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Error updating stock: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update stock: {str(e)}"
+        )
+
+@app.get("/nari-vastrika/debug/products")
+def debug_products(db: Session = Depends(get_db)):
+    """
+    Debug endpoint to see all product IDs and their stock
+    """
+    products = db.query(Db_Model.Product).all()
+    return {
+        "total_products": len(products),
+        "products": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "stock": p.stock,
+                "category": p.category,
+                "subcategory": p.subcategory
+            }
+            for p in products
+        ]
     }
 
 @app.post("/nari-vastrika/orders/verify-upi")
@@ -1100,7 +1333,260 @@ def get_admin_stats(db: Session = Depends(get_db)):
         "revenue": revenue,
     }
 
-# ============ ADMIN USER MANAGEMENT ============
+# ============ PRODUCT STOCK MANAGEMENT ENDPOINTS ============
+
+@app.patch("/nari-vastrika/products/{product_id}/stock")
+async def update_product_stock(
+    product_id: str,
+    stock_update: StockUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Update product stock quantity
+    """
+    try:
+        # Find the product - adjust the model name as per your Model.py
+        # If your model is called 'Product', use Db_Model.Product
+        # If it's called 'Products', use Db_Model.Products
+        product = db.query(Db_Model.Product).filter(Db_Model.Product.id == product_id).first()
+        
+        if not product:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Product with id '{product_id}' not found"
+            )
+        
+        # Validate stock is not negative
+        if stock_update.stock < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Stock cannot be negative"
+            )
+        
+        # Store old stock for response
+        old_stock = product.stock
+        
+        # Update stock
+        product.stock = stock_update.stock
+        
+        # Commit to database
+        db.commit()
+        db.refresh(product)
+        
+        return {
+            "success": True,
+            "message": "Stock updated successfully",
+            "product_id": product_id,
+            "old_stock": old_stock,
+            "new_stock": product.stock,
+            "product_name": product.name
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Error updating stock: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update stock: {str(e)}"
+        )
+
+
+@app.post("/nari-vastrika/products/{product_id}/decrease-stock")
+async def decrease_product_stock(
+    product_id: str,
+    decrease_data: StockDecrease,
+    db: Session = Depends(get_db)
+):
+    """
+    Decrease product stock by a specific quantity (useful for orders)
+    """
+    try:
+        product = db.query(Db_Model.Product).filter(Db_Model.Product.id == product_id).first()
+        
+        if not product:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Product with id '{product_id}' not found"
+            )
+        
+        if product.stock < decrease_data.quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient stock. Available: {product.stock}, Requested: {decrease_data.quantity}"
+            )
+        
+        # Decrease stock
+        product.stock -= decrease_data.quantity
+        
+        db.commit()
+        db.refresh(product)
+        
+        return {
+            "success": True,
+            "message": "Stock decreased successfully",
+            "product_id": product_id,
+            "remaining_stock": product.stock,
+            "decreased_by": decrease_data.quantity,
+            "product_name": product.name
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Error decreasing stock: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to decrease stock: {str(e)}"
+        )
+
+
+@app.post("/nari-vastrika/products/batch-update-stock")
+async def batch_update_stock(
+    updates: List[dict],
+    db: Session = Depends(get_db)
+):
+    """
+    Batch update stock for multiple products (useful for cart checkout)
+    Expected format: [{"product_id": "xxx", "quantity": 5}, ...]
+    """
+    results = []
+    errors = []
+    
+    try:
+        for update in updates:
+            product = db.query(Db_Model.Product).filter(
+                Db_Model.Product.id == update.get("product_id")
+            ).first()
+            
+            if not product:
+                errors.append(f"Product '{update.get('product_id')}' not found")
+                continue
+            
+            quantity = update.get("quantity", 0)
+            
+            if product.stock < quantity:
+                errors.append(f"Insufficient stock for '{product.name}'. Available: {product.stock}")
+                continue
+            
+            # Decrease stock
+            product.stock -= quantity
+            
+            results.append({
+                "product_id": product.id,
+                "name": product.name,
+                "new_stock": product.stock,
+                "reduced_by": quantity
+            })
+        
+        # Commit all changes if no errors
+        if results:
+            db.commit()
+        
+        return {
+            "success": len(errors) == 0,
+            "updated_products": results,
+            "errors": errors,
+            "total_updated": len(results)
+        }
+        
+    except Exception as e:
+        db.rollback()
+        print(f"Error in batch update: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update stock: {str(e)}"
+        )
+
+
+# Optional: Debug endpoint to check product IDs
+@app.get("/nari-vastrika/debug/products")
+async def debug_products(db: Session = Depends(get_db)):
+    """
+    Debug endpoint to see all product IDs and names
+    """
+    try:
+        products = db.query(Db_Model.Product).all()
+        return {
+            "total_products": len(products),
+            "products": [
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "stock": p.stock,
+                    "category": getattr(p, 'category', 'N/A')
+                }
+                for p in products
+            ]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# Update your existing order creation endpoint to include stock validation
+@app.post("/nari-vastrika/orders/")
+async def create_order(
+    order_data: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    Create an order and automatically decrease stock
+    """
+    try:
+        # First, validate stock for all items
+        items = order_data.get("items", [])
+        stock_errors = []
+        
+        for item in items:
+            product = db.query(Db_Model.Product).filter(
+                Db_Model.Product.id == item.get("productId")
+            ).first()
+            
+            if not product:
+                stock_errors.append(f"Product '{item.get('name')}' not found")
+            elif product.stock < item.get("qty", 0):
+                stock_errors.append(
+                    f"Insufficient stock for '{product.name}'. "
+                    f"Available: {product.stock}, Requested: {item.get('qty')}"
+                )
+        
+        if stock_errors:
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "Stock validation failed", "errors": stock_errors}
+            )
+        
+        # Create order (your existing order creation logic)
+        # ... your existing code to create order ...
+        
+        # After order is created, decrease stock for each item
+        for item in items:
+            product = db.query(Db_Model.Product).filter(
+                Db_Model.Product.id == item.get("productId")
+            ).first()
+            if product:
+                product.stock -= item.get("qty", 0)
+        
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Order created and stock updated successfully"
+            # ... rest of your order response
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Error creating order: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create order: {str(e)}"
+        )
+
 
 # ============ ADMIN PROFILE MANAGEMENT ============
 
